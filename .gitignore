@@ -1,0 +1,6 @@
+.env
+.venv/
+tmp/
+agent_chat.db
+__pycache__/
+.serena/
