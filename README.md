@@ -63,9 +63,22 @@ graph TD
    - Place custom docs in a reachable URL and update `AGNO_KNOWLEDGE_URL`.
 6. **Run the agent**
    ```bash
+   python sigma_cli.py
+   ```
+   The enhanced CLI delivers async prompts, session manager, and live metrics. Prefer the minimal REPL?
+   ```bash
    python agent_Sigma.py
    ```
    Type `exit`, `quit`, or `bye` to close the REPL.
+
+---
+
+## 🖥️ Interfaces
+- `sigma_cli.py` – prompt-toolkit UI with async `prompt_async`, live metrics, smart file helpers, and session switcher (`/sessions`).
+- `agent_Sigma.py` – minimal standard-input REPL; it reuses the same agent core without rich UI layers.
+- `sigma_os.py` – AgentOS bridge that exposes Sigma over HTTP/Web UI for remote clients.
+- Session prompt control – export `AGNO_PROMPT_SESSION_ID=true` to request a session ID at launch; unset it to auto-bootstrap with `AGNO_SESSION_ID` or a generated id.
+- History and session metadata live in `SIGMA_TMP_DIR` (`tmp/` by default) as `.sigma_history` and `.sigma_sessions.json`.
 
 ---
 
@@ -103,6 +116,8 @@ All runtime knobs live in `.env`. Key options:
 | `AGNO_MODEL_ID` | Primary DeepSeek model id | `deepseek-reasoner` |
 | `AGNO_DESCRIPTION` | Persona summary surfaced to Agno | Friendly professional agent |
 | `AGNO_INSTRUCTIONS` | `||`-delimited operational rules | See `.env` |
+| `AGNO_SESSION_ID` | Default session identifier when no prompt is shown | `sigma_chat_main` |
+| `AGNO_PROMPT_SESSION_ID` | Set to `true` to request a session ID interactively | `false` |
 | `AGNO_USER_ID` | Default user identity for personal memories | unset |
 | `AGNO_SYSTEM_USER_ID` | Memory bucket for agent/system knowledge | `agent_system` |
 | `AGNO_SEED_SYSTEM_MEMORIES` | Auto-seed baseline agent knowledge at startup | `true` |
@@ -116,11 +131,14 @@ All runtime knobs live in `.env`. Key options:
 | `AGNO_FILE_BASE_DIR` | Restrict file tool scope | unset |
 | `AGNO_ENABLE_DEBUG_MODE` | Bubble stack traces during development | `false` |
 | `AGNO_ENABLE_SESSION_SUMMARIES` | Persist/run automatic session recaps for AgentOS UI | `true` |
+| `SIGMA_TMP_DIR` | Workspace directory for CLI history and session metadata | `tmp` |
+| `SIGMA_DEEPSEEK_INPUT_PRICE` | USD per-million-token input rate for cost estimates | `0.28` |
+| `SIGMA_DEEPSEEK_OUTPUT_PRICE` | USD per-million-token output rate for cost estimates | `0.42` |
 | `AGNO_CAPTURE_RESPONSES` | Save final answers to memory via the post-hook | `false` |
 | `AGNO_CAPTURE_TOPIC` | Topic label used when `AGNO_CAPTURE_RESPONSES` is enabled | `sigma_responses` |
 | `AGNO_UPDATE_KNOWLEDGE` | Append conversation summaries to LanceDB knowledge | `false` |
 
-> Tip: Reset `AGNO_SESSION_ID` to blank to auto-generate unique sessions per run.
+> Tip: Reset `AGNO_SESSION_ID` to blank to auto-generate unique sessions per run, and point `SIGMA_TMP_DIR` to a dedicated folder if you want history outside the repo.
 
 ---
 
@@ -153,6 +171,7 @@ Each tool is toggled via `.env` booleans and inherits Agno’s guardrail instruc
 - Smoke test: `python agent_Sigma.py` and verify the REPL handles Ctrl+C gracefully.
 - Knowledge sync: confirm the first run downloads docs once, subsequent runs reuse cache.
 - Tool toggles: temporarily set `AGNO_ENABLE_FILE_TOOL=false` to ensure the agent respects the flag.
+- Enhanced CLI: run `AGNO_PROMPT_SESSION_ID=true python sigma_cli.py` and confirm the async session prompt, metrics panel, and DeepSeek cost estimates (override `SIGMA_DEEPSEEK_*` if pricing changes).
 
 ---
 

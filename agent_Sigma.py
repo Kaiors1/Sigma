@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import uuid
 import warnings
@@ -19,7 +20,7 @@ from agno.tools.file import FileTools
 from agno.tools.telegram import TelegramTools
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Awaitable, Callable, List, Optional, Union
 
 load_dotenv()
 
@@ -100,18 +101,87 @@ SYSTEM_MEMORY_USER_ID = os.getenv("AGNO_SYSTEM_USER_ID", "agent_system")
 SEED_SYSTEM_MEMORIES = getenv_bool("AGNO_SEED_SYSTEM_MEMORIES", True)
 
 instructions_env = os.getenv("AGNO_INSTRUCTIONS")
-if instructions_env:
-    INSTRUCTIONS = [item.strip() for item in instructions_env.split("||") if item.strip()]
-else:
-    INSTRUCTIONS = [
-        "You are Sigma, a terminal-first Agno agent. Be transparent about your toolkit: DuckDuckGo for research, Calculator for math, File/Shell tools for local changes (always confirm before mutating state), and Telegram for outbound alerts when enabled.",
-        "Lead with a concise outcome summary, then provide supporting detail and cite sources for factual claims.",
-        "Check LanceDB knowledge and MemoryTools before answering questions that may rely on stored context or documentation.",
-        "Maintain two memory lanes: personal user context stays under the provided user_id; agent/system knowledge belongs under AGNO_SYSTEM_USER_ID.",
-        "Call out when you store or retrieve memories so the user knows what Sigma already remembers.",
+
+SessionPromptResult = Union[Optional[str], Awaitable[Optional[str]]]
+SessionPromptResolver = Callable[[], SessionPromptResult]
+
+_session_prompt_resolver: Optional[SessionPromptResolver] = None
+
+
+def register_session_prompt_resolver(resolver: Optional[SessionPromptResolver]) -> None:
+    """Allow external front-ends to supply a non-blocking session ID prompt."""
+    global _session_prompt_resolver
+    _session_prompt_resolver = resolver
+
+
+def _default_session_prompt() -> Optional[str]:
+    try:
+        return input("Enter session ID (leave blank to auto-generate): ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+def _invoke_session_prompt(
+    prompt_callback: Optional[SessionPromptResolver] = None,
+) -> Optional[str]:
+    resolver = prompt_callback or _session_prompt_resolver or _default_session_prompt
+    if resolver is None:
+        return None
+
+    try:
+        result = resolver()
+        if inspect.isawaitable(result):
+            result = asyncio.run(result)
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if result is None:
+        return None
+    if not isinstance(result, str):
+        raise TypeError("Session prompt resolver must return a string or None.")
+
+    text = result.strip()
+    return text or None
+
+
+def _build_toolkit_descriptor() -> str:
+    capabilities = []
+    if ENABLE_DUCKDUCKGO:
+        capabilities.append("DuckDuckGo search")
+    if ENABLE_CALCULATOR:
+        capabilities.append("calculator")
+    if ENABLE_FILE_TOOL:
+        capabilities.append("file operations")
+    if ENABLE_SHELL_TOOL:
+        run_scope = "restricted" if not SHELL_ENABLE_ALL else "full"
+        capabilities.append(f"shell commands ({run_scope})")
+    if ENABLE_TELEGRAM_TOOL and TELEGRAM_CHAT_ID:
+        capabilities.append("Telegram push notifications")
+    if ENABLE_MEMORY_TOOL:
+        capabilities.append("memory recall/store")
+    if not capabilities:
+        return "You currently have no auxiliary tools enabled."
+    return "Available tools: " + ", ".join(capabilities) + "."
+
+
+def _build_instruction_baseline() -> List[str]:
+    if instructions_env:
+        return [item.strip() for item in instructions_env.split("||") if item.strip()]
+
+    baseline = [
+        "You are Sigma, a terminal-first Agno agent.",
+        _build_toolkit_descriptor(),
+        "Lead with a concise outcome summary, then provide supporting detail and cite sources for factual claims when you rely on external knowledge.",
+        "Consult LanceDB knowledge and MemoryTools before answering when stored context may help.",
+        "Maintain two memory lanes: personal user context uses the active user_id; agent/system knowledge belongs under AGNO_SYSTEM_USER_ID.",
+        "Announce when you store or retrieve memories so the user knows the agent state.",
         "Ask clarifying questions whenever requirements or intent are uncertain, and offer safe alternatives when a request is risky or unsupported.",
         "State clearly when a request cannot be fulfilled or would violate guardrails.",
     ]
+    return baseline
+
+
+INSTRUCTIONS = _build_instruction_baseline()
 
 # Database setup
 db = SqliteDb(db_file=DB_FILE)
@@ -130,8 +200,27 @@ knowledge = Knowledge(
 )
 
 _knowledge_initialized = False
+_knowledge_failed = False
 _system_memories_seeded = False
 SYSTEM_MEMORY_CONTEXT: Optional[str] = None
+
+class BootstrapStatus(BaseModel):
+    knowledge_loaded: bool = False
+    knowledge_error: Optional[str] = None
+    model_loaded: bool = False
+    model_error: Optional[str] = None
+    reasoning_model_loaded: bool = False
+    reasoning_model_error: Optional[str] = None
+
+
+bootstrap_status = BootstrapStatus()
+
+
+def _status_copy() -> BootstrapStatus:
+    """Return a deep copy compatible with pydantic v1/v2."""
+    if hasattr(bootstrap_status, "model_copy"):
+        return bootstrap_status.model_copy()
+    return bootstrap_status.copy(deep=True)  # type: ignore[attr-defined]
 
 
 def add_system_memory(memory: str, topics: Optional[List[str]] = None) -> Optional[str]:
@@ -193,11 +282,21 @@ def seed_system_memories() -> None:
 
 
 async def ensure_knowledge_loaded() -> None:
-    """Load configured knowledge corpus once per process."""
-    global _knowledge_initialized
-    if LOAD_KNOWLEDGE and KNOWLEDGE_URL and not _knowledge_initialized:
-        await knowledge.add_content_async(url=KNOWLEDGE_URL, skip_if_exists=True)
-        _knowledge_initialized = True
+    """Load configured knowledge corpus once per process with defensive handling."""
+    global _knowledge_initialized, _knowledge_failed
+    if _knowledge_initialized or _knowledge_failed:
+        return
+    if LOAD_KNOWLEDGE and KNOWLEDGE_URL:
+        try:
+            await knowledge.add_content_async(url=KNOWLEDGE_URL, skip_if_exists=True)
+            _knowledge_initialized = True
+            bootstrap_status.knowledge_loaded = True
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            warnings.warn(
+                f"Failed to load knowledge from '{KNOWLEDGE_URL}'. Continuing without knowledge base. Error: {exc}"
+            )
+            bootstrap_status.knowledge_error = str(exc)
+            _knowledge_failed = True
     seed_system_memories()
     global SYSTEM_MEMORY_CONTEXT
     SYSTEM_MEMORY_CONTEXT = load_system_memory_context()
@@ -207,8 +306,11 @@ def _build_reasoning_model():
     if not REASONING_MODEL_ID:
         return None
     try:
-        return DeepSeek(id=REASONING_MODEL_ID)
+        model = DeepSeek(id=REASONING_MODEL_ID)
+        bootstrap_status.reasoning_model_loaded = True
+        return model
     except Exception as exc:  # pragma: no cover - defensive fallback
+        bootstrap_status.reasoning_model_error = str(exc)
         warnings.warn(
             f"Failed to initialize reasoning model '{REASONING_MODEL_ID}'. Falling back to primary model. Error: {exc}"
         )
@@ -280,11 +382,22 @@ def build_agent(session_id: Optional[str] = None) -> Agent:
     resolved_session_id = session_id or default_session_id()
     effective_instructions = list(INSTRUCTIONS)
     if SYSTEM_MEMORY_CONTEXT:
-        system_prompt = "System knowledge reminders:\n" + SYSTEM_MEMORY_CONTEXT
+        system_prompt = "System knowledge reminders:\n" + "\n".join(
+            f"- {line.strip()}" for line in SYSTEM_MEMORY_CONTEXT.splitlines() if line.strip()
+        )
         effective_instructions.insert(0, system_prompt)
 
+    try:
+        primary_model = DeepSeek(id=MODEL_ID)
+        bootstrap_status.model_loaded = True
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        bootstrap_status.model_error = str(exc)
+        raise RuntimeError(
+            f"Failed to initialize primary model '{MODEL_ID}'. Check credentials or model availability."
+        ) from exc
+
     agent_kwargs = {
-        "model": DeepSeek(id=MODEL_ID),
+        "model": primary_model,
         "db": db,
         "session_id": resolved_session_id,
         "enable_user_memories": ENABLE_USER_MEMORIES,
@@ -327,15 +440,21 @@ async def initialize_agent(session_id: Optional[str] = None) -> Agent:
     global SYSTEM_MEMORY_CONTEXT
     if SYSTEM_MEMORY_CONTEXT is None:
         SYSTEM_MEMORY_CONTEXT = load_system_memory_context()
-    return build_agent(session_id=session_id)
+    agent_instance = build_agent(session_id=session_id)
+    setattr(agent_instance, "bootstrap_status", _status_copy())
+    return agent_instance
 
 
-def resolve_session_id_from_user() -> Optional[str]:
+def get_bootstrap_status() -> BootstrapStatus:
+    """Return a snapshot of the current bootstrap status."""
+    return _status_copy()
+
+
+def resolve_session_id_from_user(
+    prompt_callback: Optional[SessionPromptResolver] = None,
+) -> Optional[str]:
     if PROMPT_SESSION_ID:
-        try:
-            candidate = input("Enter session ID (leave blank to auto-generate): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
+        candidate = _invoke_session_prompt(prompt_callback)
         if candidate:
             return candidate
     if SESSION_ID:

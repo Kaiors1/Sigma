@@ -20,3 +20,4 @@ unstructured
 deepseek
 tantivy
 rich
+prompt_toolkit
