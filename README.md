@@ -33,7 +33,7 @@ graph TD
 ## 🚀 Quick Start
 1. **Clone & enter the project**
    ```bash
-   git clone <your-fork-url>
+   git clone https://github.com/Kaiors1/Sigma.git
    cd agno_agent
    ```
 2. **Create & activate the virtual environment**
