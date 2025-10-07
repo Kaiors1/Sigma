@@ -34,19 +34,31 @@ graph TD
 1. **Clone & enter the project**
    ```bash
    git clone https://github.com/Kaiors1/Sigma.git
-   cd agno_agent
+   cd Sigma
    ```
 2. **Create & activate the virtual environment**
    ```bash
    uv venv
    source .venv/bin/activate
    ```
+   If you prefer the standard `venv` tooling:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
 3. **Install dependencies**
    ```bash
    uv pip install -r requirements.txt
    ```
+   Or, with `pip`:
+   ```bash
+   pip install -r requirements.txt
+   ```
 4. **Set environment variables**
    - Copy `.env.example` (or edit `.env`) and adjust values—see [Configuration](#-configuration).
+     ```bash
+     cp .env.example .env
+     ```
 5. **Seed knowledge (optional)**
    - Place custom docs in a reachable URL and update `AGNO_KNOWLEDGE_URL`.
 6. **Run the agent**
