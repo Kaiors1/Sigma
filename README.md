@@ -19,13 +19,42 @@ Sigma Agent is a handcrafted AI command-line assistant built with the [Agno](htt
 ## 🧠 Architecture at a Glance
 ```mermaid
 graph TD
-    A[User Prompt] --> B[REPL Loop]
-    B --> C[Agno Agent]
-    C --> D[DeepSeek Model]
-    C --> E[LanceDB Knowledge]
-    C --> F[DuckDuckGo / Calculator / Memory Tools]
-    E --> G[SQLite + Vector Store]
-    G --> H[Knowledge Bootstrap]
+    subgraph Terminal & Services
+        CLI[CLI v2 · prompt_toolkit<br/>sigma_cli.py]
+        Basic[Minimal REPL<br/>agent_Sigma.py]
+        AgentOSBridge[AgentOS bridge<br/>sigma_os.py]
+    end
+
+    subgraph Agent Core
+        Agent[Agno Agent runtime]
+        Reasoning[Optional reasoning model<br/>deepseek-reasoner / alt]
+        Tools{{Agno Tool Suite}}
+    end
+
+    subgraph Data & Memory
+        LanceDB[(LanceDB vector store)]
+        SQLite[(SQLite memory DB)]
+        TmpHist[(Session history<br/>SIGMA_TMP_DIR)]
+    end
+
+    CLI -->|prompt_async| Agent
+    Basic -->|stdin loop| Agent
+    AgentOSBridge -->|REST/Web UI| Agent
+
+    Agent -->|primary inference| DeepSeek[DeepSeek primary model]
+    Agent --> Reasoning
+    Agent --> LanceDB
+    Agent --> SQLite
+    Agent --> Tools
+
+    Tools -->|search| DuckDuckGo[DuckDuckGo]
+    Tools -->|calc| Calculator[Calculator]
+    Tools -->|memory| MemoryTools[Memory tools]
+    Tools -->|files / shell| FileShell[File & Shell tools]
+    Tools -->|push| Telegram[Telegram notifications]
+
+    LanceDB -->|bootstrap| KnowledgeURL[Knowledge URL<br/>AGNO_KNOWLEDGE_URL]
+    CLI -->|sessions + history| TmpHist
 ```
 
 ---
